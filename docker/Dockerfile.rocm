@@ -4,9 +4,33 @@
 # default base image
 ARG BASE_IMAGE="rocm/vllm-dev:20241022"
 
+ARG COMMON_WORKDIR=/app
+
+# The following ARGs should be "0" or "1". If "1", the respective component will be built and installed on top of the base image
+ARG BUILD_HIPBLASLT="1"
+ARG BUILD_RCCL="1"
+ARG BUILD_SGLANG="1"
+
+# -----------------------
+# sglang base image
 FROM $BASE_IMAGE AS base
 USER root
 
+# Import BASE_IMAGE arg from pre-FROM
+ARG BASE_IMAGE
+ARG COMMON_WORKDIR
+# Used as ARCHes for all components
+ARG ARG_PYTORCH_ROCM_ARCH="gfx942"
+ENV PYTORCH_ROCM_ARCH=${ARG_PYTORCH_ROCM_ARCH}
+
+ENV LLVM_SYMBOLIZER_PATH=/opt/rocm/llvm/bin/llvm-symbolizer
+ENV PATH=$PATH:/opt/rocm/bin:/opt/conda/envs/py_3.9/lib/python3.9/site-packages/torch/bin:
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib/:/opt/conda/envs/py_3.9/lib/python3.9/site-packages/torch/lib:
+ENV CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:/opt/conda/envs/py_3.9/lib/python3.9/site-packages/torch/include:/opt/conda/envs/py_3.9/lib/python3.9/site-packages/torch/include/torch/csrc/api/include/:/opt/rocm/include/:
+
+# -----------------------
+# sglang build stages
+FROM base AS build_sglang
 WORKDIR /sgl-workspace
 ARG BUILD_TYPE=all
 ARG SGL_REPO="https://github.com/sgl-project/sglang"
@@ -29,6 +53,50 @@ RUN git clone ${SGL_REPO} \
 
 RUN cp -r /sgl-workspace/sglang /sglang
 RUN python -m pip cache purge
+
+# -----------------------
+# hipBLASLt build stages
+FROM base AS build_hipblaslt
+ARG COMMON_WORKDIR
+WORKDIR ${COMMON_WORKDIR}
+ARG HIPBLASLT_BRANCH="c7f473ccb13512e8a5c8e107f57479639bfcc963"
+RUN apt-get purge -y hipblaslt \
+    && git clone https://github.com/ROCm/hipBLASLt.git \
+    && cd hipBLASLt \
+    && git checkout ${HIPBLASLT_BRANCH} \
+    && ./install.sh --architecture ${PYTORCH_ROCM_ARCH} --legacy_hipblas_direct \
+    && cd build/release \
+    && make package
+FROM scratch AS export_hipblaslt_1
+ARG COMMON_WORKDIR
+COPY --from=build_hipblaslt ${COMMON_WORKDIR}/hipBLASLt/build/release/*.deb /
+FROM scratch AS export_hipblaslt_0
+FROM export_hipblaslt_${BUILD_HIPBLASLT} AS export_hipblaslt
+
+# -----------------------
+# RCCL build stages
+FROM base AS build_rccl
+ARG COMMON_WORKDIR
+WORKDIR ${COMMON_WORKDIR}
+ARG RCCL_BRANCH="rocm-6.2.0"
+RUN git clone https://github.com/ROCm/rccl \
+    && cd rccl \
+    && git checkout ${RCCL_BRANCH} \
+    && ./install.sh -p --amdgpu_targets ${PYTORCH_ROCM_ARCH}
+FROM scratch AS export_rccl_1
+ARG COMMON_WORKDIR
+COPY --from=build_rccl ${COMMON_WORKDIR}/rccl/build/release/*.deb /
+FROM scratch AS export_rccl_0
+FROM export_rccl_${BUILD_RCCL} AS export_rccl
+
+
+# -----------------------
+# Final Stage
+FROM base AS final
+COPY --from=build_sglang /sglang /sgl-workspace/sglang
+#COPY --from=export_hipblaslt / /
+#COPY --from=export_rccl / /
+
 
 # Performance environment variable.
 
