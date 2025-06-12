@@ -2,28 +2,29 @@
 #   docker build --build-arg SGL_BRANCH=v0.4.7 -t v0.4.7-rocm630 -f Dockerfile.rocm .
 
 # default base image
-ARG BASE_IMAGE="rocm/sgl-dev:vllm20250114"
+ARG BASE_IMAGE="henryx/xsgl:gfx950_sgl-v0.4.6post4_aiter-main-0.1.2-softsign_support-mxfp4-moe_0612"
 
 FROM $BASE_IMAGE AS base
 USER root
 
 WORKDIR /sgl-workspace
 ARG BUILD_TYPE=all
-ARG SGL_REPO="https://github.com/sgl-project/sglang"
-ENV SGL_DEFAULT="main"
+ARG SGL_REPO="https://github.com/sogalin/sglang"
+ENV SGL_DEFAULT="gfx950-dockerfile"
 ARG SGL_BRANCH=${SGL_DEFAULT}
 
 ARG TRITON_REPO="https://github.com/ROCm/triton.git"
-ARG TRITON_COMMIT="improve_fa_decode_3.0.0"
+ARG TRITON_COMMIT="c9b0454e515d9c1d6249bea17644df274f09e4b1"
 
 
-ARG AITER_REPO="https://github.com/ROCm/aiter.git"
-ARG AITER_COMMIT="v0.1.2"
+ARG AITER_REPO="https://github.com/sogalin/aiter.git"
+ARG AITER_COMMIT="v0.1.2-gfx950"
 
 RUN git clone ${SGL_REPO} \
     && cd sglang \
     && if [ "${SGL_BRANCH}" = ${SGL_DEFAULT} ]; then \
          echo "Using ${SGL_DEFAULT}, default branch."; \
+         git checkout ${SGL_DEFAULT}; \
        else \
          echo "Using ${SGL_BRANCH} branch."; \
          git checkout ${SGL_BRANCH}; \
@@ -59,7 +60,7 @@ RUN git clone ${AITER_REPO} \
     && cd aiter \
     && git checkout ${AITER_COMMIT} \
     && git submodule update --init --recursive \
-    && PREBUILD_KERNELS=1 GPU_ARCHS=gfx942 python3 setup.py develop
+    && PREBUILD_KERNELS=1 GPU_ARCHS=gfx950 python3 setup.py develop
 
 # Copy config files to support MI300X in virtualized environments (MI300X_VF).  Symlinks will not be created in image build.
 RUN find /sgl-workspace/sglang/python/sglang/srt/layers/quantization/configs/ \
@@ -83,3 +84,5 @@ ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
 
 CMD ["/bin/bash"]
+
+
