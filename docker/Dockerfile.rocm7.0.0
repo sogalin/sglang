@@ -1,0 +1,92 @@
+# Usage (to build SGLang ROCm docker image):
+#   docker build --build-arg SGL_BRANCH=v0.4.7 -t v0.4.7-rocm630 -f Dockerfile.rocm .
+
+# default base image
+ARG BASE_IMAGE="rocm/7.0-preview:rocm7.0_preview_ubuntu_22.04_vllm_0.8.5_mi35X_prealpha"
+
+FROM $BASE_IMAGE AS base
+USER root
+
+WORKDIR /sgl-workspace
+ARG BUILD_TYPE=all
+ARG SGL_REPO="https://github.com/sogalin/sglang"
+ENV SGL_DEFAULT="v0.4.7.post1-gfx950"
+ARG SGL_BRANCH=${SGL_DEFAULT}
+
+ARG TRITON_REPO="https://github.com/ROCm/triton.git"
+ARG TRITON_COMMIT="e2f87c4c681ce3611e82232ecb5856987651d88a"
+
+ARG AITER_REPO="https://github.com/sogalin/aiter.git"
+ARG AITER_COMMIT="v0.1.2-gfx950"
+
+ARG AMDGPU_TARGET="gfx950"
+
+WORKDIR /sgl-workspace/
+RUN git clone ${SGL_REPO} \
+    && cd sglang \
+    && if [ "${SGL_BRANCH}" = ${SGL_DEFAULT} ]; then \
+         echo "Using ${SGL_DEFAULT}, default branch."; \
+         git checkout ${SGL_DEFAULT}; \
+       else \
+         echo "Using ${SGL_BRANCH} branch."; \
+         git checkout ${SGL_BRANCH}; \
+       fi \
+    && cd sgl-kernel \
+    && rm -f pyproject.toml \
+    && mv pyproject_rocm.toml pyproject.toml \
+    && python setup_rocm.py install \
+    && cd .. \
+    && if [ "$BUILD_TYPE" = "srt" ]; then \
+         python -m pip --no-cache-dir install -e "python[srt_hip]"; \
+       else \
+         python -m pip --no-cache-dir install -e "python[all_hip]"; \
+       fi
+
+#RUN cp -r /sgl-workspace/sglang /sglang
+RUN python -m pip cache purge
+
+RUN pip install IPython \
+    && pip install orjson \
+    && pip install python-multipart \
+    && pip install torchao \
+    && pip install pybind11
+
+WORKDIR /sgl-workspace/
+RUN git clone ${TRITON_REPO}
+WORKDIR /sgl-workspace/triton
+RUN git checkout ${TRITON_COMMIT}
+RUN pip3 uninstall -y triton
+RUN python3 setup.py install
+
+WORKDIR /sgl-workspace/
+RUN pip uninstall -y aiter
+RUN git clone ${AITER_REPO}
+WORKDIR /sgl-workspace/aiter
+RUN git checkout ${AITER_COMMIT} \
+    && git submodule update --init --recursive \
+    && PREBUILD_KERNELS=1 GPU_ARCHS=gfx950 python3 setup.py develop
+
+
+# Copy config files to support MI300X in virtualized environments (MI300X_VF).  Symlinks will not be created in image build.
+RUN find /sgl-workspace/sglang/python/sglang/srt/layers/quantization/configs/ \
+         /sgl-workspace/sglang/python/sglang/srt/layers/moe/fused_moe_triton/configs/ \
+         -type f -name '*MI300X*' | xargs -I {} sh -c 'vf_config=$(echo "$1" | sed "s/MI300X/MI300X_VF/"); cp "$1" "$vf_config"' -- {}
+
+# Performance environment variable.
+ENV HIP_FORCE_DEV_KERNARG=1
+ENV HSA_NO_SCRATCH_RECLAIM=1
+ENV SGLANG_SET_CPU_AFFINITY=1
+ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+ENV NCCL_MIN_NCHANNELS=112
+
+ENV SGLANG_MOE_PADDING=1
+ENV VLLM_FP8_PADDING=1
+ENV VLLM_FP8_ACT_PADDING=1
+ENV VLLM_FP8_WEIGHT_PADDING=1
+ENV VLLM_FP8_REDUCE_CONV=1
+ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
+ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+
+CMD ["/bin/bash"]
+
+
