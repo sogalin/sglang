@@ -18,7 +18,8 @@ ARG TRITON_COMMIT="c9b0454e515d9c1d6249bea17644df274f09e4b1"
 
 
 ARG AITER_REPO="https://github.com/sogalin/aiter.git"
-ARG AITER_COMMIT="v0.1.2-gfx950"
+#ARG AITER_COMMIT="v0.1.2-gfx950"
+ARG AITER_COMMIT="8a32433a3c7b73083d4a90d1c43efafac60021ca"
 
 RUN git clone ${SGL_REPO} \
     && cd sglang \
