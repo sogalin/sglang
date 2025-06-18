@@ -1,5 +1,5 @@
 # Usage (to build SGLang ROCm docker image):
-#   docker build --build-arg SGL_BRANCH=v0.4.7 -t v0.4.7-rocm630 -f Dockerfile.rocm .
+#   docker build --build-arg SGL_BRANCH=v0.4.7.post1 -t v0.4.7.post1-rocm630 -f Dockerfile.rocm .
 
 # default base image
 ARG BASE_IMAGE="henryx/xsgl:gfx950_sgl-v0.4.6post4_aiter-main-0.1.2-softsign_support-mxfp4-moe_0612"
