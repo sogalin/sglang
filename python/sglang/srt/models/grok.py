@@ -905,8 +905,9 @@ class Grok1ForCausalLM(nn.Module):
             input_ids, hidden_states, self.lm_head, forward_batch
         )
 
-    def load_weights(
+    def load_weights_to_module(
         self,
+        fqn: str,
         weights: Iterable[Tuple[str, torch.Tensor]],
         ignore_parent_name: bool = False,
         check_hit_names: bool = True,
@@ -962,6 +963,17 @@ class Grok1ForCausalLM(nn.Module):
 
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
+
+            if param.numel() == 1 and loaded_weight.numel() == 1:
+                print(" ")
+            else:
+                if param.size() != loaded_weight.size():
+                    print(os.getpid(), "!!!!!!!!!!!!!!!!!!!!!!!!!weight_loader name=", name, " param.size=", param.size(), " loaded_weight.size=", loaded_weight.size())
+            #        return;
+
+
+
+            print(os.getpid(), " param.size()=", param.size(), " loaded_weight.size()", loaded_weight.size())
             weight_loader(param, loaded_weight, *args, **kwargs)
             hit_names.add(name)
             self.loaded_param_names.add(original_name)
@@ -971,6 +983,7 @@ class Grok1ForCausalLM(nn.Module):
                 continue
 
             for param_name, weight_name, shard_id in stacked_params_mapping:
+                #print("1. name=", name, " param_name=", param_name, " weight_name=", weight_name, " shard_id=", shard_id)
                 if weight_name not in name:
                     continue
                 name = name.replace(weight_name, param_name)
@@ -982,9 +995,11 @@ class Grok1ForCausalLM(nn.Module):
             else:
                 for mapping in expert_params_mapping:
                     param_name, weight_name, expert_id, shard_id = mapping
+                    #print("2. name=", name, " param_name=", param_name, " weight_name=", weight_name, " shard_id=", shard_id)
                     if weight_name not in name:
                         continue
                     name = name.replace(weight_name, param_name)
+                    print(os.getpid(), " 2. name=", name, " param_name=", param_name, " weight_name=", weight_name, " shard_id=", shard_id)
 
                     load_weight_wrapper(
                         name,
@@ -1000,7 +1015,7 @@ class Grok1ForCausalLM(nn.Module):
                         continue
                     if name is None:
                         continue
-
+                    print(os.getpid(), " 3. name=", name, " param_name=", param_name, " weight_name=", weight_name, " shard_id=", shard_id)
                     load_weight_wrapper(name=name, loaded_weight=loaded_weight)
 
         if check_hit_names:
@@ -1021,6 +1036,16 @@ class Grok1ForCausalLM(nn.Module):
                 )
 
         return hit_names
+
+    def load_weights(
+        self,
+        weights: Iterable[Tuple[str, torch.Tensor]],
+        ignore_parent_name: bool = False,
+        check_hit_names: bool = True,
+        model_config: PretrainedConfig | None = None,
+    ):
+        """Load weights onto the full model."""
+        self.load_weights_to_module("", weights, ignore_parent_name, check_hit_names, model_config)
 
     def get_num_params_analytical(self):
         cfg = self.config

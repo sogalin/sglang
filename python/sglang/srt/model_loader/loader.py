@@ -686,38 +686,99 @@ class DummyModelLoader(BaseModelLoader):
     def download_model(self, model_config: ModelConfig) -> None:
         pass  # Nothing to download
 
+#    def load_model(
+#        self,
+#        *,
+#        model_config: ModelConfig,
+#        device_config: DeviceConfig,
+#    ) -> nn.Module:
+#
+#        if get_bool_env_var("SGL_CPU_QUANTIZATION"):
+#            return load_model_with_cpu_quantization(
+#                self, model_config=model_config, device_config=device_config
+#            )
+#
+#        with set_default_torch_dtype(model_config.dtype):
+#            with torch.device(device_config.device):
+#                model = _initialize_model(
+#                    model_config,
+#                    self.load_config,
+#                )
+#
+#            for _, module in model.named_modules():
+#                quant_method = getattr(module, "quant_method", None)
+#                if quant_method is not None:
+#                    quant_method.process_weights_after_loading(module)
+#
+#            # NOTE(woosuk): For accurate performance evaluation, we assign
+#            # random values to the weights.
+#            initialize_dummy_weights(model)
+#
+#            post_load_weights(model, model_config)
+#
+#        return model.eval()
+
     def load_model(
         self,
         *,
         model_config: ModelConfig,
         device_config: DeviceConfig,
     ) -> nn.Module:
+        from sglang.srt.layers.torchao_utils import apply_torchao_config_to_model
+        from sglang.srt.managers.schedule_batch import global_server_args_dict
 
-        if get_bool_env_var("SGL_CPU_QUANTIZATION"):
-            return load_model_with_cpu_quantization(
-                self, model_config=model_config, device_config=device_config
-            )
+        torchao_config = global_server_args_dict.get("torchao_config")
+        target_device = torch.device(device_config.device)
 
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            # Create model on meta device
+            with torch.device("meta"):
                 model = _initialize_model(
                     model_config,
                     self.load_config,
                 )
 
-            for _, module in model.named_modules():
-                quant_method = getattr(module, "quant_method", None)
-                if quant_method is not None:
-                    quant_method.process_weights_after_loading(module)
+            # Check model's layered load support
+            if not hasattr(model, "load_weights_to_module"):
+                raise ValueError(
+                    "LayeredModelLoader requires the model to have a "
+                    "`load_weights_to_module` method. "
+                    f"{model_config.model_path} does not support it."
+                )
 
-            # NOTE(woosuk): For accurate performance evaluation, we assign
-            # random values to the weights.
-            initialize_dummy_weights(model)
+            # Get all weights from disk
+            weights = self._get_all_weights(model_config, model)
 
-            post_load_weights(model, model_config)
+            # Helper function to recursively fill the weights of a module
+            def fill_module(module, fqn: List[str], weights):
+                """
+                fqn: list of strings representing the fully qualified name of `module`.
+                """
+                # Layer by layer
+                for name, submod in module.named_children():
+                    fill_module(submod, fqn + [name], weights)
+
+                # First materialize on target device
+                module.to_empty(device=target_device, recurse=False)
+                fqn_path = ".".join(fqn)
+                # Fill weights
+                model.load_weights_to_module(
+                    fqn_path,
+                    weights,
+                )
+                # Quantize weights if applicable
+                if torchao_config and "proj" in fqn_path:
+                    # Note: `None` here is needed to indicate no filter, see
+                    # `apply_torchao_config_to_model` for details.
+                    apply_torchao_config_to_model(module, torchao_config, None)
+
+            # Start calling on root module
+            fill_module(model, [], weights)
+
+        if torchao_config:
+            model.torchao_applied = True
 
         return model.eval()
-
 
 class ShardedStateLoader(BaseModelLoader):
     """

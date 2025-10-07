@@ -797,6 +797,7 @@ def convert_pyslice_to_tensor(x: Any) -> torch.Tensor:
 
 def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> None:
     """Default weight loader."""
+    print(os.getpid(), " param.size()=", param.size(), " loaded_weight.size()", loaded_weight.size())
     try:
         if param.numel() == 1 and loaded_weight.numel() == 1:
             # Sometimes scalar values aren't considered tensors with shapes
@@ -804,6 +805,7 @@ def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> N
             # "broadcast" instead of copy
             param.data.fill_(loaded_weight.item())
         else:
+            print(os.getpid(), " param.size()=", param.size(), " loaded_weight.size()", loaded_weight.size())
             assert param.size() == loaded_weight.size(), (
                 f"Attempted to load weight ({loaded_weight.size()}) "
                 f"into parameter ({param.size()})"
