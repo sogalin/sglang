@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, List, Optional
 
+import aiter
+from aiter.ops.triton.gemm_afp4wfp4 import gemm_afp4wfp4
 import torch
 from torch.nn.parameter import Parameter
 
@@ -30,14 +32,18 @@ from sglang.srt.layers.dp_attention import is_allocation_symmetric
 from sglang.srt.layers.moe import MoeRunner, MoeRunnerBackend, MoeRunnerConfig
 from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
 from sglang.srt.layers.moe.utils import get_moe_runner_backend
+from sglang.srt.layers.parameter import ModelWeightParameter
 from sglang.srt.layers.quantization.base_config import (
     FusedMoEMethodBase,
+    LinearMethodBase,
     QuantizationConfig,
     QuantizeMethodBase,
 )
 from sglang.srt.layers.quantization.utils import is_layer_skipped
 from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils import (
+    direct_register_custom_op,
+    get_bool_env_var,
     is_cuda,
     is_flashinfer_available,
     is_gfx95_supported,
@@ -158,6 +164,30 @@ def quant_dequant_mxfp4(
     return mx.qdq_mxfp4(x, scale_calculation_mode)
 
 
+def _quant_dequant_mxfp4_fake(
+    x: torch.Tensor, scale_calculation_mode: str = "even"
+) -> torch.Tensor:
+    return torch.empty_like(x)
+
+
+direct_register_custom_op(
+    op_name="dequant_mxfp4",
+    op_func=_dequant_mxfp4,
+    mutates_args=[],
+    fake_impl=_dequant_mxfp4_fake,
+)
+dequant_mxfp4 = torch.ops.sglang.dequant_mxfp4
+
+direct_register_custom_op(
+    op_name="quant_dequant_mxfp4",
+    op_func=_quant_dequant_mxfp4,
+    mutates_args=[],
+    fake_impl=_quant_dequant_mxfp4_fake,
+)
+quant_dequant_mxfp4 = torch.ops.sglang.quant_dequant_mxfp4
+
+use_dynamic_mxfp4_linear = get_bool_env_var("SGLANG_USE_DYNAMIC_MXFP4_linear")
+
 class Mxfp4Config(QuantizationConfig):
 
     def __init__(
@@ -215,7 +245,6 @@ class Mxfp4Config(QuantizationConfig):
         from sglang.srt.layers.linear import LinearBase
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-
         if isinstance(layer, LinearBase):
             if self.ignored_layers and is_layer_skipped(
                 prefix=prefix,
@@ -223,8 +252,27 @@ class Mxfp4Config(QuantizationConfig):
                 fused_mapping=self.packed_modules_mapping,
             ):
                 return UnquantizedLinearMethod()
+            elif _is_hip and self.is_checkpoint_mxfp4_serialized:
+                scheme = self.get_scheme(layer=layer, layer_name=prefix)
+                layer.scheme = scheme
+                print("SOGA - self.is_checkpoint_mxfp4_serialized")
+                return MxFp4LinearMethod(self)
+            elif _is_hip and use_dynamic_mxfp4_linear:
+                print("SOGA - use_dynamic_mxfp4_linear")
+                return MxFp4LinearMethod(self)
             elif _is_hip:
+                print("SOGA - UnquantizedLinearMethod")
                 return UnquantizedLinearMethod()
+
+#        if isinstance(layer, LinearBase):
+#            if self.ignored_layers and is_layer_skipped(
+#                prefix=prefix,
+#                ignored_layers=self.ignored_layers,
+#                fused_mapping=self.packed_modules_mapping,
+#            ):
+#                return UnquantizedLinearMethod()
+#            elif _is_hip:
+#                return UnquantizedLinearMethod()
         elif isinstance(layer, FusedMoE):
             if self.is_checkpoint_mxfp4_serialized:
                 return Mxfp4MoEMethod(prefix=prefix)
@@ -237,6 +285,122 @@ class Mxfp4Config(QuantizationConfig):
 
     def get_scaled_act_names(self) -> List[str]:
         return []
+
+class MxFp4LinearMethod(LinearMethodBase):
+
+    def __init__(self, quantization_config: MxFp4Config):
+        self.quantization_config = quantization_config
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        # return
+         if self.quantization_config.is_checkpoint_mxfp4_serialized:
+            layer.scheme.process_weights_after_loading(layer)
+         else:
+            #w, w_scales = dynamic_mxfp4_quant(layer.weight.data)
+            ##log_info_on_rank0(logger, f"w.shape: {w.shape}")
+
+            #wshuffle = w#shuffle_weight(w, layout=(16, 16))
+            #w_scales_shuffle = w_scales#e8m0_shuffle(w_scales).view(dtypes.fp8_e8m0)
+
+            quant_func = aiter.get_triton_quant(aiter.QuantType.per_1x32)
+
+            w, w_scales_shuffle = quant_func(layer.weight.data, shuffle=True)
+
+            wshuffle = shuffle_weight(w, layout=(16, 16))
+
+            wshuffle_uint8 = wshuffle.view(torch.uint8)
+            w_scales_shuffle_uint8 = w_scales_shuffle.view(torch.uint8)
+
+            layer.weight = torch.nn.Parameter(wshuffle_uint8,
+                                              requires_grad=False)
+            layer.weight_scale = torch.nn.Parameter(w_scales_shuffle_uint8,
+                                                    requires_grad=False)
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        input_size_per_partition: int,
+        output_partition_sizes: list[int],
+        input_size: int,
+        output_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ):
+        """
+        Use the CompressedTensorsScheme associated with each layer to create
+        the necessary parameters for the layer. See LinearMethodBase for param
+        details
+        """
+        weight_loader = extra_weight_attrs.get("weight_loader")
+
+        if self.quantization_config.is_checkpoint_mxfp4_serialized:
+            layer.scheme.create_weights(
+                layer=layer,
+                input_size=input_size,
+                input_size_per_partition=input_size_per_partition,
+                output_partition_sizes=output_partition_sizes,
+                output_size=output_size,
+                params_dtype=params_dtype,
+                weight_loader=weight_loader,
+            )
+        else:
+            output_size_per_partition = sum(output_partition_sizes)
+            layer.logical_widths = output_partition_sizes
+            layer.input_size_per_partition = input_size_per_partition
+            layer.output_size_per_partition = output_size_per_partition
+            layer.orig_dtype = params_dtype
+
+            weight_dtype = params_dtype
+
+            weight = ModelWeightParameter(
+                data=torch.empty(
+                    output_size_per_partition,
+                    input_size_per_partition,
+                    dtype=weight_dtype,
+                ),
+                input_dim=1,
+                output_dim=0,
+                weight_loader=weight_loader,
+            )
+
+            layer.register_parameter("weight", weight)
+            layer.register_parameter("weight_scale", None)
+
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ):
+        """
+        Use the output of create_weights and the CompressedTensorsScheme
+        associated with the layer to apply the forward pass with the
+        layer input.  See LinearMethodBase for param details
+
+        """
+        if self.quantization_config.is_checkpoint_mxfp4_serialized:
+            scheme = layer.scheme
+            if scheme is None:
+                raise ValueError("A scheme must be defined for each layer")
+            return scheme.apply_weights(layer, x, bias=bias)
+        else:
+            out_dtype = x.dtype
+
+            x_q, x_s = dynamic_mxfp4_quant(x)
+            x_s = x_s.view(torch.float8_e4m3fn).reshape(*x_q.shape[:-1], -1)
+            y = torch.empty(
+                x_q.shape[0],
+                layer.weight.shape[0],
+                device=x_q.device,
+                dtype=out_dtype,
+            )
+            print("SOGA mxfp4 x_q:", x_q.dtype, " x_s:", x_s.dtype, " y:", y.dtype, " layer.weight:", layer.weight.dtype, " layer.weight_scale:", layer.weight_scale.dtype, " out_dtype:", out_dtype, " y:", y.dtype)
+
+            out = gemm_afp4wfp4(
+                x_q, layer.weight, x_s, layer.weight_scale, out_dtype, y
+            )
+
+            return out
 
 
 class Mxfp4MoEMethod(FusedMoEMethodBase):
