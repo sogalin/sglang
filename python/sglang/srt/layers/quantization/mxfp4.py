@@ -296,25 +296,31 @@ class MxFp4LinearMethod(LinearMethodBase):
          if self.quantization_config.is_checkpoint_mxfp4_serialized:
             layer.scheme.process_weights_after_loading(layer)
          else:
-            #w, w_scales = dynamic_mxfp4_quant(layer.weight.data)
+            w, w_scales = dynamic_mxfp4_quant(layer.weight.data)
+            layer.weight = torch.nn.Parameter(w,
+                                              requires_grad=False)
+            layer.weight_scale = torch.nn.Parameter(w_scales,
+                                                    requires_grad=False)
             ##log_info_on_rank0(logger, f"w.shape: {w.shape}")
 
             #wshuffle = w#shuffle_weight(w, layout=(16, 16))
             #w_scales_shuffle = w_scales#e8m0_shuffle(w_scales).view(dtypes.fp8_e8m0)
 
-            quant_func = aiter.get_triton_quant(aiter.QuantType.per_1x32)
 
-            w, w_scales_shuffle = quant_func(layer.weight.data, shuffle=True)
+            # Method 1
+            #quant_func = aiter.get_triton_quant(aiter.QuantType.per_1x32)
 
-            wshuffle = shuffle_weight(w, layout=(16, 16))
+            #w, w_scales_shuffle = quant_func(layer.weight.data, shuffle=True)
 
-            wshuffle_uint8 = wshuffle.view(torch.uint8)
-            w_scales_shuffle_uint8 = w_scales_shuffle.view(torch.uint8)
+            #wshuffle = shuffle_weight(w, layout=(16, 16))
 
-            layer.weight = torch.nn.Parameter(wshuffle_uint8,
-                                              requires_grad=False)
-            layer.weight_scale = torch.nn.Parameter(w_scales_shuffle_uint8,
-                                                    requires_grad=False)
+            #wshuffle_uint8 = wshuffle.view(torch.uint8)
+            #w_scales_shuffle_uint8 = w_scales_shuffle.view(torch.uint8)
+
+            #layer.weight = torch.nn.Parameter(wshuffle_uint8,
+            #                                  requires_grad=False)
+            #layer.weight_scale = torch.nn.Parameter(w_scales_shuffle_uint8,
+            #                                        requires_grad=False)
 
     def create_weights(
         self,
@@ -387,14 +393,14 @@ class MxFp4LinearMethod(LinearMethodBase):
             out_dtype = x.dtype
 
             x_q, x_s = dynamic_mxfp4_quant(x)
-            x_s = x_s.view(torch.float8_e4m3fn).reshape(*x_q.shape[:-1], -1)
+            #x_s = x_s.view(torch.float8_e4m3fn).reshape(*x_q.shape[:-1], -1)
             y = torch.empty(
                 x_q.shape[0],
                 layer.weight.shape[0],
                 device=x_q.device,
                 dtype=out_dtype,
             )
-            print("SOGA mxfp4 x_q:", x_q.dtype, " x_s:", x_s.dtype, " y:", y.dtype, " layer.weight:", layer.weight.dtype, " layer.weight_scale:", layer.weight_scale.dtype, " out_dtype:", out_dtype, " y:", y.dtype)
+            #print("SOGA mxfp4 x_q:", x_q.dtype, " x_s:", x_s.dtype, " y:", y.dtype, " layer.weight:", layer.weight.dtype, " layer.weight_scale:", layer.weight_scale.dtype, " out_dtype:", out_dtype, " y:", y.dtype)
 
             out = gemm_afp4wfp4(
                 x_q, layer.weight, x_s, layer.weight_scale, out_dtype, y
