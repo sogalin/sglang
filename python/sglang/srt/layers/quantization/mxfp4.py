@@ -255,24 +255,11 @@ class Mxfp4Config(QuantizationConfig):
             elif _is_hip and self.is_checkpoint_mxfp4_serialized:
                 scheme = self.get_scheme(layer=layer, layer_name=prefix)
                 layer.scheme = scheme
-                print("SOGA - self.is_checkpoint_mxfp4_serialized")
                 return MxFp4LinearMethod(self)
             elif _is_hip and use_dynamic_mxfp4_linear:
-                print("SOGA - use_dynamic_mxfp4_linear")
                 return MxFp4LinearMethod(self)
             elif _is_hip:
-                print("SOGA - UnquantizedLinearMethod")
                 return UnquantizedLinearMethod()
-
-#        if isinstance(layer, LinearBase):
-#            if self.ignored_layers and is_layer_skipped(
-#                prefix=prefix,
-#                ignored_layers=self.ignored_layers,
-#                fused_mapping=self.packed_modules_mapping,
-#            ):
-#                return UnquantizedLinearMethod()
-#            elif _is_hip:
-#                return UnquantizedLinearMethod()
         elif isinstance(layer, FusedMoE):
             if self.is_checkpoint_mxfp4_serialized:
                 return Mxfp4MoEMethod(prefix=prefix)
@@ -393,14 +380,12 @@ class MxFp4LinearMethod(LinearMethodBase):
             out_dtype = x.dtype
 
             x_q, x_s = dynamic_mxfp4_quant(x)
-            #x_s = x_s.view(torch.float8_e4m3fn).reshape(*x_q.shape[:-1], -1)
             y = torch.empty(
                 x_q.shape[0],
                 layer.weight.shape[0],
                 device=x_q.device,
                 dtype=out_dtype,
             )
-            #print("SOGA mxfp4 x_q:", x_q.dtype, " x_s:", x_s.dtype, " y:", y.dtype, " layer.weight:", layer.weight.dtype, " layer.weight_scale:", layer.weight_scale.dtype, " out_dtype:", out_dtype, " y:", y.dtype)
 
             out = gemm_afp4wfp4(
                 x_q, layer.weight, x_s, layer.weight_scale, out_dtype, y
