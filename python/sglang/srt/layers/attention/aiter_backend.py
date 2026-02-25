@@ -128,9 +128,9 @@ class AiterAttnBackend(AttentionBackend):
         # use the full KV pool; use the first full-attention layer id.
         layer_id = 0
         if hasattr(model_runner.token_to_kv_pool, "full_attention_layer_id_mapping"):
-            layer_id = next(
-                iter(model_runner.token_to_kv_pool.full_attention_layer_id_mapping)
-            )
+            mapping = model_runner.token_to_kv_pool.full_attention_layer_id_mapping
+            if mapping:
+                layer_id = next(iter(mapping))
         self.v_head_dim = model_runner.token_to_kv_pool.get_value_buffer(
             layer_id
         ).shape[-1]
