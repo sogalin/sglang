@@ -12,12 +12,13 @@ from sglang.test.test_utils import (
 )
 
 register_cuda_ci(est_time=90, suite="stage-b-test-large-2-gpu")
+register_cuda_ci(est_time=90, suite="stage-b-test-large-2-gpu-amd")
 
 
 class TestKimiLinear(CustomTestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model = "moonshotai/Kimi-Linear-48B-A3B-Instruct"
+        cls.model = "/data2/moonshotai/Kimi-Linear-48B-A3B-Instruct"
         cls.base_url = DEFAULT_URL_FOR_TEST
         cls.process = popen_launch_server(
             cls.model,
