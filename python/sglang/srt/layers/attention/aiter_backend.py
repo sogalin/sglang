@@ -123,7 +123,7 @@ class AiterAttnBackend(AttentionBackend):
             model_runner.model_config.num_attention_heads // get_attention_tp_size()
         )
         self.head_dim = model_runner.model_config.head_dim
-        # self.v_head_dim = model_runner.token_to_kv_pool.get_value_buffer(0).shape[-1]
+
         # For models with mixed attention (e.g. Kimi-Linear), only a subset of layers
         # use the full KV pool; use the first full-attention layer id.
         layer_id = 0
