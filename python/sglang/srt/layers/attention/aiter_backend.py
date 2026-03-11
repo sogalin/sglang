@@ -1780,6 +1780,8 @@ class AiterAttnBackend(AttentionBackend):
 
             bs0 = forward_batch.batch_size + 1
 
+            kv_last_page_len = self.cuda_graph_kv_last_page_len[:bs0].to(q.device)
+
             window_size = (-1, -1)
             if layer.sliding_window_size is not None and layer.sliding_window_size > -1:
                 window_size = (layer.sliding_window_size, -1)
@@ -1789,17 +1791,11 @@ class AiterAttnBackend(AttentionBackend):
                     q,
                     quant_dtype=fp8_dtype
                 )
-                #q_quant, q_descale = q_quant.detach(), q_descale.detach()
 
                 k_quant = k_cache
                 v_quant = v_cache
                 k_descale = torch.tensor([1.0], device=q.device, dtype=torch.float32)
                 v_descale = torch.tensor([1.0], device=q.device, dtype=torch.float32)
-
-                #k_quant, k_descale = k_quant.detach(), k_descale.detach()
-                #v_quant, v_descale = v_quant.detach(), v_descale.detach()
-
-                kv_last_page_len = self.cuda_graph_kv_last_page_len[:bs0].to(q.device)
 
                 o = mha_batch_prefill_func(
                     q_quant.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
