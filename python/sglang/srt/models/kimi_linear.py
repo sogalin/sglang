@@ -48,8 +48,13 @@ from sglang.srt.model_loader.weight_utils import (
 from sglang.srt.models.deepseek_v2 import DeepseekV2AttentionMLA as KimiMLAAttention
 from sglang.srt.models.llama import LlamaMLP as KimiMLP
 from sglang.srt.models.transformers import maybe_prefix
-from sglang.srt.utils import make_layers
+from sglang.srt.utils import (
+    is_cuda,
+    make_layers,
+)
 from sglang.srt.utils.common import BumpAllocator, add_prefix, set_weight_attrs
+
+_is_cuda = is_cuda()
 
 
 class KimiMoE(nn.Module):
@@ -550,7 +555,7 @@ class KimiLinearModel(nn.Module):
         else:
             self.embed_tokens = PPMissingLayer()
 
-        self.alt_stream = torch.cuda.Stream()
+        self.alt_stream = torch.cuda.Stream() if _is_cuda else None
 
         self.layers, self.start_layer, self.end_layer = make_layers(
             config.num_hidden_layers,
