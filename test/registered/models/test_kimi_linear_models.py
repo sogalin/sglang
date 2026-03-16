@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from sglang.srt.utils import kill_process_tree
+from sglang.srt.utils import is_hip, kill_process_tree
 from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
 from sglang.test.few_shot_gsm8k import run_eval
 from sglang.test.test_utils import (
@@ -10,6 +10,8 @@ from sglang.test.test_utils import (
     CustomTestCase,
     popen_launch_server,
 )
+
+_is_hip = is_hip()
 
 register_cuda_ci(est_time=90, suite="stage-b-test-large-2-gpu")
 register_amd_ci(est_time=90, suite="stage-b-test-large-2-gpu-amd")
@@ -20,11 +22,14 @@ class TestKimiLinear(CustomTestCase):
     def setUpClass(cls):
         cls.model = "moonshotai/Kimi-Linear-48B-A3B-Instruct"
         cls.base_url = DEFAULT_URL_FOR_TEST
+        other_args = ["--tp-size", "2", "--trust-remote"]
+        if _is_hip:
+            other_args += ["--attention-backend", "triton"]
         cls.process = popen_launch_server(
             cls.model,
             cls.base_url,
             timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
-            other_args=["--tp-size", "2", "--trust-remote"],
+            other_args=other_args,
         )
 
     @classmethod
