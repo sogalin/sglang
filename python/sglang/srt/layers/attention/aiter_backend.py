@@ -37,6 +37,7 @@ try:
         mla_prefill_ps_asm_fwd,
         mla_reduce_v1,
         paged_attention_ragged,
+        per_tensor_quant,
     )
     from aiter.mla import mla_decode_fwd, mla_prefill_fwd
 except ImportError:
@@ -2125,33 +2126,63 @@ class AiterAttnBackend(AttentionBackend):
 
             bs0 = forward_batch.batch_size + 1
 
-            # TODO kkhuang-amd need to remove it when mha_batch_prefill_func support fp8-kv
-            if self.kv_cache_dtype == fp8_dtype:
-                dtype = q.dtype
-                k_cache = k_cache.to(dtype)
-                v_cache = v_cache.to(dtype)
+            kv_last_page_len = self.cuda_graph_kv_last_page_len[:bs0].to(q.device)
 
             window_size = (-1, -1)
             if layer.sliding_window_size is not None and layer.sliding_window_size > -1:
                 window_size = (layer.sliding_window_size, -1)
 
-            o = mha_batch_prefill_func(
-                q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
-                k_cache,
-                v_cache,
-                self.qo_indptr[:bs0],
-                self.forward_metadata.kv_indptr[:bs0],
-                self.forward_metadata.kv_indices,
-                self.forward_metadata.max_q_len,
-                self.forward_metadata.max_kv_len,
-                causal=True,
-                logits_soft_cap=self.logits_soft_cap,
-                alibi_slopes=None,
-                return_lse=False,
-                return_attn_probs=False,
-                window_size=window_size,
-                sink_ptr=sinks,
-            )
+            if self.kv_cache_dtype == fp8_dtype:
+                q_quant, q_descale = per_tensor_quant(
+                    q,
+                    quant_dtype=fp8_dtype
+                )
+
+                k_quant = k_cache
+                v_quant = v_cache
+                k_descale = torch.tensor([1.0], device=q.device, dtype=torch.float32)
+                v_descale = torch.tensor([1.0], device=q.device, dtype=torch.float32)
+
+                o = mha_batch_prefill_func(
+                    q_quant.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
+                    k_quant,
+                    v_quant,
+                    self.qo_indptr[:bs0],
+                    self.forward_metadata.kv_indptr[:bs0],
+                    self.forward_metadata.kv_indices,
+                    self.forward_metadata.max_q_len,
+                    self.forward_metadata.max_kv_len,
+                    causal=True,
+                    logits_soft_cap=self.logits_soft_cap,
+                    q_descale=q_descale,
+                    k_descale=k_descale,
+                    v_descale=v_descale,
+                    alibi_slopes=None,
+                    return_lse=False,
+                    return_attn_probs=False,
+                    window_size=window_size,
+                    sink_ptr=sinks,
+                    kv_last_page_lens=kv_last_page_len,
+                )
+            else:
+                o = mha_batch_prefill_func(
+                    q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
+                    k_cache,
+                    v_cache,
+                    self.qo_indptr[:bs0],
+                    self.forward_metadata.kv_indptr[:bs0],
+                    self.forward_metadata.kv_indices,
+                    self.forward_metadata.max_q_len,
+                    self.forward_metadata.max_kv_len,
+                    causal=True,
+                    logits_soft_cap=self.logits_soft_cap,
+                    alibi_slopes=None,
+                    return_lse=False,
+                    return_attn_probs=False,
+                    window_size=window_size,
+                    sink_ptr=sinks,
+                    kv_last_page_lens=kv_last_page_len,
+                )
 
             return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
