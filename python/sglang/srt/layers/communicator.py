@@ -600,7 +600,10 @@ class LayerCommunicator:
                             hidden_states,
                             residual,
                             use_attn_tp_group=False,
-                            keep_bf16=self.fused_ar_quant_keep_bf16,
+                            # A quantized consumer (e.g. a checkpoint that
+                            # quantizes Qwen3.5 in_proj_a/in_proj_b) passes
+                            # emit_bf16=False to veto the sidecar write.
+                            keep_bf16=self.fused_ar_quant_keep_bf16 and emit_bf16,
                         )
                     if quant_result is not None:
                         hidden_states, residual = quant_result

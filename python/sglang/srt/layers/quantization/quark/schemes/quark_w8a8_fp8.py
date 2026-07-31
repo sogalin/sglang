@@ -14,7 +14,9 @@ from sglang.srt.layers.parameter import (
 from sglang.srt.layers.quantization.fp8_utils import (
     apply_fp8_linear,
     cutlass_fp8_supported,
+    maybe_apply_fp8_skinny_prequant,
     normalize_e4m3fn_to_e4m3fnuz,
+    wvsplitk_prequant_eligible,
 )
 from sglang.srt.layers.quantization.quark.schemes import QuarkLinearScheme
 from sglang.srt.layers.quantization.utils import requantize_with_max_scale
@@ -100,6 +102,20 @@ class QuarkW8A8Fp8(QuarkLinearScheme):
                 layer.weight = Parameter(
                     shuffle_weight(weight, (16, 16)).t(), requires_grad=False
                 )
+                # The skinny FP8 GEMM used for tiny decode batches needs the
+                # plain (N, K) weight, which the shuffled+transposed copy above
+                # no longer is.
+                if self.per_token and wvsplitk_prequant_eligible(
+                    weight.shape[0], weight.shape[1]
+                ):
+                    # as_subclass: weight is a ModelWeightParameter here, and
+                    # Parameter() rejects subclasses whose detach() returns a
+                    # plain Tensor. Keeping a reference is what retains the
+                    # unshuffled storage that shuffle_weight would otherwise drop.
+                    layer.weight_wvsplitk = Parameter(
+                        weight.data.contiguous().as_subclass(torch.Tensor),
+                        requires_grad=False,
+                    )
             else:
                 layer.weight = Parameter(weight.t(), requires_grad=False)
             # required by torch.compile to be torch.nn.Parameter
@@ -174,6 +190,18 @@ class QuarkW8A8Fp8(QuarkLinearScheme):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+
+        # A fused producer hands us (fp8, scale) already quantized; at decode
+        # widths the skinny FP8 GEMM beats the bpreshuffle one on narrow layers.
+        if self.per_token and isinstance(x, tuple):
+            out = maybe_apply_fp8_skinny_prequant(
+                x,
+                getattr(layer, "weight_wvsplitk", None),
+                layer.weight_scale,
+                bias=bias,
+            )
+            if out is not None:
+                return out
 
         return apply_fp8_linear(
             x,
